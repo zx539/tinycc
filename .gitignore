@@ -68,3 +68,6 @@ tests/vla_test
 tests/hello
 tests/tests2/fred.txt
 libtcc.dylib
+
+# Local architecture reference documents are not part of the source tree.
+docs/

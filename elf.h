@@ -211,6 +211,7 @@ typedef struct
 #define EM_RH32		38		/* TRW RH-32 */
 #define EM_RCE		39		/* Motorola RCE */
 #define EM_ARM		40		/* ARM */
+#define EM_LOONGARCH	258		/* LoongArch */
 #define EM_FAKE_ALPHA	41		/* Digital Alpha */
 #define EM_SH		42		/* Hitachi SH */
 #define EM_SPARCV9	43		/* SPARC v9 64-bit */
@@ -3320,6 +3321,26 @@ typedef Elf32_Addr Elf32_Conflict;
 #define R_RISCV_SUB_ULEB128	61
 
 #define R_RISCV_NUM		62
+
+/* LoongArch ELF relocations. */
+#define R_LARCH_NONE             0
+#define R_LARCH_32               1
+#define R_LARCH_64               2
+#define R_LARCH_RELATIVE         3
+#define R_LARCH_COPY             4
+#define R_LARCH_JUMP_SLOT        5
+#define R_LARCH_B26              66
+#define R_LARCH_ABS_HI20         67
+#define R_LARCH_ABS_LO12         68
+#define R_LARCH_PCALA_HI20       71
+#define R_LARCH_PCALA_LO12       72
+#define R_LARCH_GOT_PC_HI20      73
+#define R_LARCH_GOT_PC_LO12      74
+#define R_LARCH_GOT_HI20         75
+#define R_LARCH_GOT_LO12         76
+#define R_LARCH_TLS_LE_HI20      96
+#define R_LARCH_TLS_LE_LO12      97
+#define R_LARCH_NUM              127
 
 
 #endif	/* elf.h */

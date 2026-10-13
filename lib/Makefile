@@ -74,6 +74,10 @@ OBJ-arm-eabi = $(OBJ-arm)
 OBJ-arm-eabihf = $(OBJ-arm)
 OBJ-arm-wince = $(ARM_O) $(WIN_O)
 OBJ-riscv64 = $(RISCV64_O) armflush.o $(LIN_O)
+# LA32R has hardware integer divide/multiply and currently does not ship a
+# target runtime library; keep an empty archive until the ABI helper set is
+# added.
+OBJ-la32r =
 
 OBJ-extra = $(filter $(EXTRA_O),$(OBJ-$T))
 OBJ-libtcc1 = $(addprefix $(X),$(filter-out $(OBJ-extra),$(OBJ-$T)))

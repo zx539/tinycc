@@ -7,8 +7,9 @@ Features:
 - SMALL! You can compile and execute C code everywhere, for example on
   rescue disks.
 
-- FAST! tcc generates machine code for i386, x86_64, arm, aarch64 or
-  riscv64.  Compiles and links about 10 times faster than 'gcc -O0'.
+- FAST! tcc generates machine code for i386, x86_64, arm, aarch64,
+  riscv64 and (experimental) LoongArch32.  Compiles and links about 10
+  times faster than 'gcc -O0'.
 
 - UNLIMITED! Any C dynamic library can be used directly. TCC is
   heading toward full ISOC99 compliance. TCC can of course compile
@@ -83,6 +84,20 @@ when doing 'make test'.
 
 Please read tcc-doc.html to have all the features of TCC.  Additional
 information for the Windows port is in tcc-win32.txt.
+
+5) LoongArch32 port
+
+The tree contains an experimental LA32R backend.  It can be built as a
+cross compiler with:
+
+   ./configure --cpu=la32r --config-bcheck=no --config-backtrace=no
+   make la32r-tcc
+   make -C lib CROSS_TARGET=la32r
+
+The backend currently emits ELF32 LoongArch relocatable objects and covers
+the base integer code-generation path.  Floating-point instructions, the
+complete ABI runtime library, inline assembly, and full dynamic-linking
+support are tracked in `issues/0001-la32r-follow-up.md`.
 
 License:
 -------

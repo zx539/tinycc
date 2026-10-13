@@ -158,11 +158,13 @@ extern long double strtold (const char *__nptr, char **__endptr);
 /* #define TCC_TARGET_ARM64  *//* ARMv8 code generator */
 /* #define TCC_TARGET_C67    *//* TMS320C67xx code generator */
 /* #define TCC_TARGET_RISCV64 *//* risc-v code generator */
+/* #define TCC_TARGET_LA32R   *//* LoongArch32 code generator */
 
 /* default target is I386 */
 #if !defined(TCC_TARGET_I386) && !defined(TCC_TARGET_ARM) && \
     !defined(TCC_TARGET_ARM64) && !defined(TCC_TARGET_C67) && \
-    !defined(TCC_TARGET_X86_64) && !defined(TCC_TARGET_RISCV64)
+    !defined(TCC_TARGET_X86_64) && !defined(TCC_TARGET_RISCV64) && \
+    !defined(TCC_TARGET_LA32R)
 # if defined __x86_64__
 #  define TCC_TARGET_X86_64
 # elif defined __arm__
@@ -174,6 +176,8 @@ extern long double strtold (const char *__nptr, char **__endptr);
 #  define TCC_TARGET_ARM64
 # elif defined __riscv
 #  define TCC_TARGET_RISCV64
+# elif defined __loongarch__ && !defined __loongarch64
+#  define TCC_TARGET_LA32R
 # else
 #  define TCC_TARGET_I386
 # endif
@@ -387,6 +391,9 @@ extern long double strtold (const char *__nptr, char **__endptr);
 # include "riscv64-gen.c"
 # include "riscv64-link.c"
 # include "riscv64-asm.c"
+#elif defined(TCC_TARGET_LA32R)
+# include "la32r-gen.c"
+# include "la32r-link.c"
 #else
 #error unknown target
 #endif
@@ -1729,6 +1736,16 @@ ST_FUNC void gen_cvt_sxtw(void);
 ST_FUNC void gen_cvt_csti(int t);
 ST_FUNC void gen_increment_tcov (SValue *sv);
 ST_FUNC void gen_clear_cache(void);
+#endif
+
+/* ------------ la32r-gen.c ------------ */
+#ifdef TCC_TARGET_LA32R
+ST_FUNC void gen_opl(int op);
+ST_FUNC void gen_cvt_sxtw(void);
+ST_FUNC void gen_cvt_csti(int t);
+ST_FUNC void g(int c);
+ST_FUNC void gen_le16(int c);
+ST_FUNC void gen_le32(int c);
 #endif
 
 /* ------------ c67-gen.c ------------ */
