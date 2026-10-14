@@ -125,25 +125,69 @@ ST_FUNC void store(int r, SValue *sv) {
 static void load_const(int r, int32_t v) { emit_i20(0x0a, IREG(r), (v + 0x800) >> 12); emit_i(0x0a, IREG(r), IREG(r), v); }
 
 ST_FUNC void gfunc_call(int n) {
-    int i; for (i = n - 1; i >= 0; --i) { gv(RC_R(i < 8 ? i : 0)); if (i < 8 && vtop->r != i) emit_i(0x0a, IREG(i), IREG(vtop->r), 0); vtop--; }
-    if ((vtop->r & VT_VALMASK) == VT_CONST && (vtop->r & VT_SYM)) { greloca(cur_text_section, vtop->sym, ind, R_LARCH_B26, 0); o(0x15 << 26); } else { gv(RC_INT); o((0x13 << 26) | (IREG(vtop->r) << 5)); }
-    vtop--;
+    int i, stack_size, stage, call_target;
+    SValue *func = vtop - n;
+    stack_size = n > 8 ? (n - 8) * 4 : 0;
+    stack_size = (stack_size + 15) & -16;
+    stage = stack_size;
+    call_target = stage + n * 4;
+    stack_size = (call_target + 4 + 15) & -16;
+    if (stack_size >= 0x800)
+        tcc_error("la32r: call frame too large");
+    if (stack_size)
+        emit_i(0x0a, 3, 3, -stack_size);
+
+    if (!((func->r & VT_VALMASK) == VT_CONST && (func->r & VT_SYM))) {
+        gv(RC_INT);
+        emit_i(0xA6, IREG(vtop->r), 3, call_target);
+    }
+    for (i = 0; i < n; ++i) {
+        SValue *arg = func + 1 + i;
+        vtop = arg;
+        gv(RC_INT);
+        emit_i(0xA6, IREG(vtop->r), 3, stage + i * 4);
+    }
+    for (i = 8; i < n; ++i) {
+        emit_i(0xA2, 12, 3, stage + i * 4);
+        emit_i(0xA6, 12, 3, (i - 8) * 4);
+    }
+    for (i = 0; i < n && i < 8; ++i) {
+        emit_i(0xA2, 4 + i, 3, stage + i * 4);
+    }
+
+    if ((func->r & VT_VALMASK) == VT_CONST && (func->r & VT_SYM)) {
+        greloca(cur_text_section, func->sym, ind, R_LARCH_B26, 0);
+        o(0x15 << 26);
+    } else {
+        emit_i(0xA2, 12, 3, call_target);
+        o((0x13 << 26) | (12 << 5));
+    }
+    if (stack_size)
+        emit_i(0x0a, 3, 3, stack_size);
+    vtop -= n + 1;
 }
 
 static int la_prolog;
+static int la_ra_store, la_fp_store;
 ST_FUNC void gfunc_prolog(Sym *f) {
     Sym *a;
     int i = 0;
-    loc = -4;
+    loc = -8;
     la_prolog = ind;
     o(0);                 /* patched: allocate frame */
+    la_ra_store = ind;
+    o(0);                 /* patched: save ra */
+    la_fp_store = ind;
+    o(0);                 /* patched: save caller fp */
     o(0);                 /* patched: establish frame pointer */
-    emit_i(0xA6, 1, LA_FP, -4); /* save ra */
     for (a = f->type.ref->next; a; a = a->next, ++i) {
-        loc -= 4;
-        gfunc_set_param(a, loc, 0);
-        if (i < 8)
-            o((0xA6 << 22) | (((loc & 0xfff) << 10)) | (LA_FP << 5) | (4 + i));
+        if (i < 8) {
+            loc -= 4;
+            gfunc_set_param(a, loc, 0);
+            emit_i(0xA6, 4 + i, LA_FP, loc);
+        } else {
+            gfunc_set_param(a, (i - 8) * 4, 0);
+        }
     }
 }
 ST_FUNC int gfunc_sret(CType *v, int va, CType *r, int *a, int *rs) { int z = type_size(v, a); *rs = 4; r->t = VT_INT; return z > 8 ? 0 : (z + 3) / 4; }
@@ -151,9 +195,12 @@ ST_FUNC void gfunc_epilog(void) {
     int size = (-loc + 15) & -16;
     if (size < 16) size = 16;
     write32le(cur_text_section->data + la_prolog, OP_I12(0x0a, 3, 3, -size));
-    write32le(cur_text_section->data + la_prolog + 4, OP_I12(0x0a, LA_FP, 3, size));
+    write32le(cur_text_section->data + la_ra_store, OP_I12(0xA6, 1, 3, size - 4));
+    write32le(cur_text_section->data + la_fp_store, OP_I12(0xA6, LA_FP, 3, size - 8));
+    write32le(cur_text_section->data + la_prolog + 12, OP_I12(0x0a, LA_FP, 3, size));
     emit_i(0xA2, 1, LA_FP, -4); /* restore ra */
-    emit_i(0x0a, 3, LA_FP, 0);  /* discard frame */
+    emit_i(0xA2, LA_FP, LA_FP, -8); /* restore caller fp */
+    emit_i(0x0a, 3, 3, size);  /* release frame */
     o((0x13 << 26) | (1 << 5)); /* jirl zero, ra, 0 */
 }
 ST_FUNC void arch_transfer_ret_regs(int x) { }

@@ -14,16 +14,17 @@ int branch(int a, int b) {
     return 3;
 }
 int constant(void) { return 0x12345678; }
+int ninth(int a, int b, int c, int d, int e, int f, int g, int h, int i) {
+    return i;
+}
+int call_ninth(void) { return ninth(1, 2, 3, 4, 5, 6, 7, 8, 9); }
+int call_indirect(int (*fn)(int), int x) { return fn(x); }
+int recurse(int n) { return n ? recurse(n - 1) + 1 : 0; }
 EOF
 "$tcc" -c "$tmp.c" -o "$tmp.o"
 readelf -h "$tmp.o" >"$tmp.h"
 grep -q 'Class:.*ELF32' "$tmp.h"
 grep -q 'Machine:.*LoongArch' "$tmp.h"
-if readelf -r "$tmp.o" | grep -q 'R_LARCH_B26'; then
-    echo 'unexpected call relocation in local-only test' >&2
-    exit 1
-fi
-
 cat >"$tmp-call.c" <<'EOF'
 extern int ext(int);
 int call_ext(int x) { return ext(x); }
