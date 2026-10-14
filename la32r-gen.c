@@ -32,8 +32,10 @@
 #define IREG(r) ((r) == TREG_RA ? 1 : (r) == TREG_SP ? 3 : (r) + 4)
 #define IS_IREG(r) ((unsigned)(r) < 8 || (r) == TREG_RA || (r) == TREG_SP)
 #define OP_R(op, rd, rj, rk) (((op) << 15) | ((rk) << 10) | ((rj) << 5) | (rd))
-#define OP_I(op, rd, rj, imm) (((op) << 22) | (((imm) & 0xfff) << 10) | ((rj) << 5) | (rd))
-#define OP_B(op, rj, rd, imm) (((op) << 26) | (((imm) >> 2) & 0xffff) << 10 | ((rj) << 5) | (rd))
+#define OP_I12(op, rd, rj, imm) (((op) << 22) | (((imm) & 0xfff) << 10) | ((rj) << 5) | (rd))
+#define OP_I20(op, rd, imm) (((op) << 25) | (((imm) & 0xfffff) << 5) | (rd))
+#define OP_B16(op, rj, rd, imm) (((op) << 26) | ((((imm) >> 2) & 0xffff) << 10) | ((rj) << 5) | (rd))
+#define OP_B26(op, imm) (((op) << 26) | (((imm) >> 2) & 0x03ffffff))
 
 ST_DATA const char * const target_machine_defs = "__loongarch__\0__loongarch32\0__loongarch_grlen 32\0";
 ST_DATA const int reg_classes[NB_REGS] = {
@@ -58,10 +60,19 @@ ST_FUNC void asm_gen_code(ASMOperand *a, int n, int o, int i, uint8_t *c, int r)
 ST_FUNC void asm_clobber(uint8_t *c, const char *s) { }
 
 ST_FUNC void gsym_addr(int t, int a) {
-    while (t) { unsigned char *p = cur_text_section->data + t; uint32_t n = read32le(p); int32_t d = a - t; if ((d & 3) || d < -(1 << 17) || d >= (1 << 17)) tcc_error("branch out of range"); write32le(p, (read32le(p) & 0xfc00001f) | (((d >> 2) & 0xffff) << 10)); t = n; }
+    while (t) {
+        unsigned char *p = cur_text_section->data + t;
+        uint32_t n = read32le(p);
+        int32_t d = a - t;
+        if ((d & 3) || d < -(1 << 27) || d >= (1 << 27))
+            tcc_error("branch out of range");
+        write32le(p, OP_B26(0x14, d));
+        t = n;
+    }
 }
 
-static void emit_i(int op, int d, int j, int imm) { o(OP_I(op, d, j, imm)); }
+static void emit_i(int op, int d, int j, int imm) { o(OP_I12(op, d, j, imm)); }
+static void emit_i20(int op, int d, int imm) { o(OP_I20(op, d, imm)); }
 static void emit_r(int op, int d, int j, int k) { o(OP_R(op, d, j, k)); }
 
 ST_FUNC void load(int r, SValue *sv) {
@@ -69,30 +80,53 @@ ST_FUNC void load(int r, SValue *sv) {
     if (sv->r & VT_LVAL) {
         size = type_size(&sv->type, &al); base = v < VT_CONST ? IREG(v) : 3;
         if (v == VT_LOCAL) base = LA_FP;
-        else if (v >= VT_CONST) { emit_i(0x0a, 5, 0, off >> 12); emit_i(0x0a, 5, 5, off); base = 5; off = 0; }
+        else if (v >= VT_CONST) { emit_i20(0x0a, 5, (off + 0x800) >> 12); emit_i(0x0a, 5, 5, off); base = 5; off = 0; }
         if (sv->r & VT_SYM) { greloca(cur_text_section, sv->sym, ind, R_LARCH_ABS_LO12, off); base = 0; off = 0; }
         emit_i(size == 1 ? ((sv->type.t & VT_UNSIGNED) ? 0xA8 : 0xA0) : size == 2 ? ((sv->type.t & VT_UNSIGNED) ? 0xA9 : 0xA1) : 0xA2, d, base, off);
     } else if (v == VT_CONST) {
-        emit_i(0x0a, d, 0, off >> 12); emit_i(0x0a, d, d, off);
+        emit_i20(0x0a, d, (off + 0x800) >> 12); emit_i(0x0a, d, d, off);
     } else if (v < VT_CONST) {
         emit_i(0x0a, d, IREG(v), 0);
     } else if (v == VT_CMP) {
         int a = IREG(vtop->cmp_r & 255), b = IREG((vtop->cmp_r >> 8) & 255);
-        emit_r((vtop->cmp_op >= TOK_ULT && vtop->cmp_op <= TOK_UGT) ? 0x25 : 0x24, d, a, b);
+        int cmp = vtop->cmp_op, tmp;
+        switch (cmp) {
+        case TOK_EQ:
+            emit_r(0x2b, d, a, b);       /* xor */
+            emit_i(0x09, d, d, 1);       /* sltui d, d, 1 */
+            break;
+        case TOK_NE:
+            emit_r(0x2b, d, a, b);       /* xor */
+            emit_r(0x25, d, 0, d);       /* sltu d, zero, d */
+            break;
+        case TOK_GE: case TOK_LE: case TOK_GT: case TOK_LT:
+        case TOK_UGE: case TOK_ULE: case TOK_UGT: case TOK_ULT:
+            if (cmp == TOK_GE || cmp == TOK_LE) {
+                tmp = a; a = b; b = tmp;
+            } else if (cmp == TOK_GT || cmp == TOK_UGT) {
+                tmp = a; a = b; b = tmp;
+            }
+            emit_r((cmp == TOK_UGE || cmp == TOK_ULE || cmp == TOK_UGT || cmp == TOK_ULT) ? 0x25 : 0x24, d, a, b);
+            if (cmp == TOK_GE || cmp == TOK_LE || cmp == TOK_UGE || cmp == TOK_ULE)
+                emit_i(0x0f, d, d, 1);   /* xori d, d, 1 */
+            break;
+        default:
+            tcc_error("la32r: unsupported comparison");
+        }
     } else tcc_error("la32r: unsupported load");
 }
 
 ST_FUNC void store(int r, SValue *sv) {
     int s = IREG(r), v = sv->r & VT_VALMASK, size, al, base = v < VT_CONST ? IREG(v) : 3, off = sv->c.i;
-    size = type_size(&sv->type, &al); if (v == VT_LOCAL) base = LA_FP; else if (v >= VT_CONST) { emit_i(0x0a, 5, 0, off >> 12); emit_i(0x0a, 5, 5, off); base = 5; off = 0; }
+    size = type_size(&sv->type, &al); if (v == VT_LOCAL) base = LA_FP; else if (v >= VT_CONST) { emit_i20(0x0a, 5, (off + 0x800) >> 12); emit_i(0x0a, 5, 5, off); base = 5; off = 0; }
     o((size == 1 ? 0xA4 : size == 2 ? 0xA5 : 0xA6) << 22 | ((off & 0xfff) << 10) | (base << 5) | s);
 }
 
-static void load_const(int r, int32_t v) { emit_i(0x0a, IREG(r), 0, v >> 12); emit_i(0x0a, IREG(r), IREG(r), v); }
+static void load_const(int r, int32_t v) { emit_i20(0x0a, IREG(r), (v + 0x800) >> 12); emit_i(0x0a, IREG(r), IREG(r), v); }
 
 ST_FUNC void gfunc_call(int n) {
     int i; for (i = n - 1; i >= 0; --i) { gv(RC_R(i < 8 ? i : 0)); if (i < 8 && vtop->r != i) emit_i(0x0a, IREG(i), IREG(vtop->r), 0); vtop--; }
-    if ((vtop->r & VT_VALMASK) == VT_CONST && (vtop->r & VT_SYM)) { greloca(cur_text_section, vtop->sym, ind, R_LARCH_B26, 0); o(0x15 << 26); } else { gv(RC_INT); emit_i(0x13, 1, IREG(vtop->r), 0); }
+    if ((vtop->r & VT_VALMASK) == VT_CONST && (vtop->r & VT_SYM)) { greloca(cur_text_section, vtop->sym, ind, R_LARCH_B26, 0); o(0x15 << 26); } else { gv(RC_INT); o((0x13 << 26) | (IREG(vtop->r) << 5)); }
     vtop--;
 }
 
@@ -116,19 +150,46 @@ ST_FUNC int gfunc_sret(CType *v, int va, CType *r, int *a, int *rs) { int z = ty
 ST_FUNC void gfunc_epilog(void) {
     int size = (-loc + 15) & -16;
     if (size < 16) size = 16;
-    write32le(cur_text_section->data + la_prolog, OP_I(0x0a, 3, 3, -size));
-    write32le(cur_text_section->data + la_prolog + 4, OP_I(0x0a, LA_FP, 3, size));
+    write32le(cur_text_section->data + la_prolog, OP_I12(0x0a, 3, 3, -size));
+    write32le(cur_text_section->data + la_prolog + 4, OP_I12(0x0a, LA_FP, 3, size));
     emit_i(0xA2, 1, LA_FP, -4); /* restore ra */
     emit_i(0x0a, 3, LA_FP, 0);  /* discard frame */
-    o((0x13 << 26) | (1 << 10) | (1 << 5)); /* jirl zero, ra, 0 */
+    o((0x13 << 26) | (1 << 5)); /* jirl zero, ra, 0 */
 }
 ST_FUNC void arch_transfer_ret_regs(int x) { }
 ST_FUNC void gen_va_start(void) { vtop--; vset(&char_pointer_type, VT_LOCAL, 0); }
 
 ST_FUNC int gjmp(int t) { o(t); return ind - 4; }
-ST_FUNC void gjmp_addr(int a) { int d = a - ind; o(0x14 << 26 | ((d >> 2) & 0x03ffffff)); }
-ST_FUNC int gjmp_cond(int op, int t) { int a = IREG(vtop->cmp_r & 255), b = IREG((vtop->cmp_r >> 8) & 255); o(OP_B(op == TOK_EQ ? 0x16 : op == TOK_NE ? 0x17 : op == TOK_LT ? 0x18 : 0x19, a, b, 8)); return gjmp(t); }
-ST_FUNC int gjmp_append(int n, int t) { if (n) { int q = n; while (read32le(cur_text_section->data + q)) q = read32le(cur_text_section->data + q); write32le(cur_text_section->data + q, t); } return n ? n : t; }
+ST_FUNC void gjmp_addr(int a) { int d = a - ind; if ((d & 3) || d < -(1 << 27) || d >= (1 << 27)) tcc_error("branch out of range"); o(OP_B26(0x14, d)); }
+ST_FUNC int gjmp_cond(int op, int t) {
+    int a = IREG(vtop->cmp_r & 255), b = IREG((vtop->cmp_r >> 8) & 255);
+    int bop = 0x16, tmp;
+    switch (op) {
+    case TOK_EQ: bop = 0x16; break;
+    case TOK_NE: bop = 0x17; break;
+    case TOK_LT: bop = 0x18; break;
+    case TOK_GE: bop = 0x19; break;
+    case TOK_ULT: bop = 0x1a; break;
+    case TOK_UGE: bop = 0x1b; break;
+    case TOK_LE: bop = 0x19; tmp = a; a = b; b = tmp; break;
+    case TOK_GT: bop = 0x18; tmp = a; a = b; b = tmp; break;
+    case TOK_ULE: bop = 0x1b; tmp = a; a = b; b = tmp; break;
+    case TOK_UGT: bop = 0x1a; tmp = a; a = b; b = tmp; break;
+    default: tcc_error("la32r: unsupported condition");
+    }
+    /* The conditional branch skips the following unconditional jump. */
+    o(OP_B16(bop, a, b, 8));
+    return gjmp(t);
+}
+ST_FUNC int gjmp_append(int n, int t) {
+    if (n) {
+        int q = n;
+        while (read32le(cur_text_section->data + q))
+            q = read32le(cur_text_section->data + q);
+        write32le(cur_text_section->data + q, t);
+    }
+    return n ? n : t;
+}
 
 ST_FUNC void gen_opi(int op) {
     int a, b, d, rop = 0x20;
