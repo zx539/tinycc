@@ -93,11 +93,16 @@ cross compiler with:
    ./configure --cpu=la32r --config-bcheck=no --config-backtrace=no
    make la32r-tcc
    make -C lib CROSS_TARGET=la32r
+   tests/la32r-test.sh ./la32r-tcc
 
 The backend currently emits ELF32 LoongArch relocatable objects and covers
-the base integer code-generation path.  Floating-point instructions, the
-complete ABI runtime library, inline assembly, and full dynamic-linking
-support are tracked in `issues/0001-la32r-follow-up.md`.
+the base integer code-generation path.  The regression script checks the ELF
+header, local integer code generation, and `R_LARCH_B26` external-call
+relocations.  The current validation stops at relocatable objects; executable
+linking and execution on a LoongArch32 target are not enabled yet.  Floating-
+point instructions, the complete ABI runtime library, inline assembly, and
+full dynamic-linking support are tracked in `issues/0001-la32r-follow-up.md`
+and `issues/0002-la32r-abi-and-runtime-validation.md`.
 
 License:
 -------

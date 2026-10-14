@@ -25,11 +25,15 @@ TCC 支持 i386、x86-64、ARM、AArch64 和 RISC-V64。LoongArch32（LA32R）�
 ./configure --cpu=la32r --config-bcheck=no --config-backtrace=no
 make la32r-tcc
 make -C lib CROSS_TARGET=la32r
+tests/la32r-test.sh ./la32r-tcc
 ```
 
 LA32R 当前覆盖基础整数指令、基本访存、分支、函数调用和栈帧生成。浮点指令、完整
-ABI 运行库、内联汇编和完整动态链接支持尚未完成，后续工作见
-[`issues/0001-la32r-follow-up.md`](issues/0001-la32r-follow-up.md)。
+ABI 运行库、内联汇编和完整动态链接支持尚未完成。回归脚本会检查 ELF 头、局部整数
+代码生成和外部调用的 `R_LARCH_B26` 重定位；当前验证范围止于可重定位目标文件，尚
+未启用可执行文件链接，也未在 LoongArch32 目标环境运行。后续工作见
+[`issues/0001-la32r-follow-up.md`](issues/0001-la32r-follow-up.md) 和
+[`issues/0002-la32r-abi-and-runtime-validation.md`](issues/0002-la32r-abi-and-runtime-validation.md)。
 
 ## 示例
 
