@@ -8,7 +8,7 @@
 #define TREG_R(x) (x)
 #define RC_INT (1 << 0)
 #define RC_FLOAT (1 << 1)
-#define RC_R(x) (1 << (1 + (x)))
+#define RC_R(x) (1 << (2 + (x)))
 #define RC_IRET RC_R(0)
 #define RC_IRE2 RC_R(1)
 #define RC_FRET 0
@@ -35,7 +35,7 @@
 #define OP_I12(op, rd, rj, imm) (((op) << 22) | (((imm) & 0xfff) << 10) | ((rj) << 5) | (rd))
 #define OP_I20(op, rd, imm) (((op) << 25) | (((imm) & 0xfffff) << 5) | (rd))
 #define OP_B16(op, rj, rd, imm) (((op) << 26) | ((((imm) >> 2) & 0xffff) << 10) | ((rj) << 5) | (rd))
-#define OP_B26(op, imm) (((op) << 26) | (((imm) >> 2) & 0x03ffffff))
+#define OP_B26(op, imm) (((op) << 26) | ((((uint32_t)(imm) >> 2) & 0xffff) << 10) | (((uint32_t)(imm) >> 18) & 0x3ff))
 
 ST_DATA const char * const target_machine_defs = "__loongarch__\0__loongarch32\0__loongarch_grlen 32\0";
 ST_DATA const int reg_classes[NB_REGS] = {
@@ -75,16 +75,32 @@ static void emit_i(int op, int d, int j, int imm) { o(OP_I12(op, d, j, imm)); }
 static void emit_i20(int op, int d, int imm) { o(OP_I20(op, d, imm)); }
 static void emit_r(int op, int d, int j, int k) { o(OP_R(op, d, j, k)); }
 
+/* r12 is a caller-saved scratch register outside the allocator's a0-a7. */
+static void la_load_symbol(int d, SValue *sv)
+{
+    greloca(cur_text_section, sv->sym, ind, R_LARCH_ABS_HI20, sv->c.i);
+    emit_i20(0x0a, d, 0);
+    greloca(cur_text_section, sv->sym, ind, R_LARCH_ABS_LO12, sv->c.i);
+    emit_i(0x0e, d, d, 0); /* ori: unsigned low 12 bits */
+}
+
+static void la_load_const(int d, uint32_t v)
+{
+    emit_i20(0x0a, d, v >> 12);
+    emit_i(0x0e, d, d, v);
+}
+
 ST_FUNC void load(int r, SValue *sv) {
     int d = IREG(r), v = sv->r & VT_VALMASK, size, al, base, off = sv->c.i;
     if (sv->r & VT_LVAL) {
         size = type_size(&sv->type, &al); base = v < VT_CONST ? IREG(v) : 3;
-        if (v == VT_LOCAL) base = LA_FP;
-        else if (v >= VT_CONST) { emit_i20(0x0a, 5, (off + 0x800) >> 12); emit_i(0x0a, 5, 5, off); base = 5; off = 0; }
-        if (sv->r & VT_SYM) { greloca(cur_text_section, sv->sym, ind, R_LARCH_ABS_LO12, off); base = 0; off = 0; }
+        if (sv->r & VT_SYM) { la_load_symbol(12, sv); base = 12; off = 0; }
+        else if (v == VT_LOCAL) base = LA_FP;
+        else if (v >= VT_CONST) { la_load_const(12, off); base = 12; off = 0; }
         emit_i(size == 1 ? ((sv->type.t & VT_UNSIGNED) ? 0xA8 : 0xA0) : size == 2 ? ((sv->type.t & VT_UNSIGNED) ? 0xA9 : 0xA1) : 0xA2, d, base, off);
     } else if (v == VT_CONST) {
-        emit_i20(0x0a, d, (off + 0x800) >> 12); emit_i(0x0a, d, d, off);
+        if (sv->r & VT_SYM) la_load_symbol(d, sv);
+        else la_load_const(d, off);
     } else if (v < VT_CONST) {
         emit_i(0x0a, d, IREG(v), 0);
     } else if (v == VT_CMP) {
@@ -118,19 +134,25 @@ ST_FUNC void load(int r, SValue *sv) {
 
 ST_FUNC void store(int r, SValue *sv) {
     int s = IREG(r), v = sv->r & VT_VALMASK, size, al, base = v < VT_CONST ? IREG(v) : 3, off = sv->c.i;
-    size = type_size(&sv->type, &al); if (v == VT_LOCAL) base = LA_FP; else if (v >= VT_CONST) { emit_i20(0x0a, 5, (off + 0x800) >> 12); emit_i(0x0a, 5, 5, off); base = 5; off = 0; }
+    size = type_size(&sv->type, &al);
+    if (sv->r & VT_SYM) { la_load_symbol(12, sv); base = 12; off = 0; }
+    else if (v == VT_LOCAL) base = LA_FP;
+    else if (v >= VT_CONST) { la_load_const(12, off); base = 12; off = 0; }
     o((size == 1 ? 0xA4 : size == 2 ? 0xA5 : 0xA6) << 22 | ((off & 0xfff) << 10) | (base << 5) | s);
 }
 
-static void load_const(int r, int32_t v) { emit_i20(0x0a, IREG(r), (v + 0x800) >> 12); emit_i(0x0a, IREG(r), IREG(r), v); }
+static void load_const(int r, int32_t v) { la_load_const(IREG(r), v); }
 
 ST_FUNC void gfunc_call(int n) {
-    int i, stack_size, stage, call_target;
+    int i, words, word, stack_size, stage, call_target;
     SValue *func = vtop - n;
-    stack_size = n > 8 ? (n - 8) * 4 : 0;
+    words = 0;
+    for (i = 0; i < n; ++i)
+        words += USING_TWO_WORDS((func + 1 + i)->type.t) ? 2 : 1;
+    stack_size = words > 8 ? (words - 8) * 4 : 0;
     stack_size = (stack_size + 15) & -16;
     stage = stack_size;
-    call_target = stage + n * 4;
+    call_target = stage + words * 4;
     stack_size = (call_target + 4 + 15) & -16;
     if (stack_size >= 0x800)
         tcc_error("la32r: call frame too large");
@@ -141,17 +163,21 @@ ST_FUNC void gfunc_call(int n) {
         gv(RC_INT);
         emit_i(0xA6, IREG(vtop->r), 3, call_target);
     }
+    word = 0;
     for (i = 0; i < n; ++i) {
         SValue *arg = func + 1 + i;
         vtop = arg;
         gv(RC_INT);
-        emit_i(0xA6, IREG(vtop->r), 3, stage + i * 4);
+        emit_i(0xA6, IREG(vtop->r), 3, stage + word * 4);
+        if (USING_TWO_WORDS(arg->type.t))
+            emit_i(0xA6, IREG(arg->r2), 3, stage + (word + 1) * 4);
+        word += USING_TWO_WORDS(arg->type.t) ? 2 : 1;
     }
-    for (i = 8; i < n; ++i) {
+    for (i = 8; i < words; ++i) {
         emit_i(0xA2, 12, 3, stage + i * 4);
         emit_i(0xA6, 12, 3, (i - 8) * 4);
     }
-    for (i = 0; i < n && i < 8; ++i) {
+    for (i = 0; i < words && i < 8; ++i) {
         emit_i(0xA2, 4 + i, 3, stage + i * 4);
     }
 
@@ -171,7 +197,7 @@ static int la_prolog;
 static int la_ra_store, la_fp_store;
 ST_FUNC void gfunc_prolog(Sym *f) {
     Sym *a;
-    int i = 0;
+    int i = 0, words;
     loc = -8;
     la_prolog = ind;
     o(0);                 /* patched: allocate frame */
@@ -180,14 +206,18 @@ ST_FUNC void gfunc_prolog(Sym *f) {
     la_fp_store = ind;
     o(0);                 /* patched: save caller fp */
     o(0);                 /* patched: establish frame pointer */
-    for (a = f->type.ref->next; a; a = a->next, ++i) {
-        if (i < 8) {
-            loc -= 4;
+    for (a = f->type.ref->next; a; a = a->next) {
+        words = USING_TWO_WORDS(a->type.t) ? 2 : 1;
+        if (i < 8 && i + words <= 8) {
+            loc -= words * 4;
             gfunc_set_param(a, loc, 0);
             emit_i(0xA6, 4 + i, LA_FP, loc);
+            if (words == 2)
+                emit_i(0xA6, 5 + i, LA_FP, loc + 4);
         } else {
             gfunc_set_param(a, (i - 8) * 4, 0);
         }
+        i += words;
     }
 }
 ST_FUNC int gfunc_sret(CType *v, int va, CType *r, int *a, int *rs) { int z = type_size(v, a); *rs = 4; r->t = VT_INT; return z > 8 ? 0 : (z + 3) / 4; }
@@ -239,11 +269,56 @@ ST_FUNC int gjmp_append(int n, int t) {
 }
 
 ST_FUNC void gen_opi(int op) {
-    int a, b, d, rop = 0x20;
+    int a, b, d, h, lhs_reg, rhs_reg, low, rop = 0x20;
+    SValue *lhs;
     if (op >= TOK_ULT && op <= TOK_GT) { gv2(RC_INT, RC_INT); a = vtop[-1].r; b = vtop->r; vtop--; vset_VT_CMP(op); vtop->cmp_r = a | (b << 8); return; }
-    if ((vtop->r & (VT_VALMASK | VT_LVAL | VT_SYM)) == VT_CONST) { int c = vtop->c.i; vswap(); a = gv(RC_INT); d = a; emit_i(op == '+' ? 0x0a : 0x0d, IREG(d), IREG(a), c); vtop--; vtop->r = d; return; }
-    gv2(RC_INT, RC_INT); a = IREG(vtop[-1].r); b = IREG(vtop->r); vtop--; d = vtop->r;
-    switch (op) { case '+': rop=0x20; break; case '-': rop=0x22; break; case '*': rop=0x38; break; case '/': rop=0x40; break; case '%': rop=0x41; break; case '&': rop=0x29; break; case '|': rop=0x2a; break; case '^': rop=0x2b; break; case TOK_SHL: rop=0x2e; break; case TOK_SHR: rop=0x2f; break; case TOK_SAR: rop=0x30; break; default: tcc_error("la32r: unsupported operator"); }
+    gv2(RC_INT, RC_INT);
+    lhs = vtop - 1;
+    if (op == TOK_UMULL) {
+        lhs_reg = lhs->r;
+        rhs_reg = vtop->r;
+        low = get_reg(RC_INT);
+        h = get_reg(RC_INT);
+        lhs->r2 = h;
+        lhs->r = low;
+        vtop--;
+        emit_r(0x38, IREG(low), IREG(lhs_reg), IREG(rhs_reg));
+        emit_r(0x3a, IREG(h), IREG(lhs_reg), IREG(rhs_reg)); /* mulh.wu */
+        return;
+    }
+    a = IREG(lhs->r); b = IREG(vtop->r); vtop--; d = vtop->r;
+    switch (op) {
+    case '+': rop = 0x20; break;
+    case '-': rop = 0x22; break;
+    case '*': rop = 0x38; break;
+    case '/': rop = 0x40; break;
+    case '%': rop = 0x41; break;
+    case '&': rop = 0x29; break;
+    case '|': rop = 0x2a; break;
+    case '^': rop = 0x2b; break;
+    case TOK_SHL: rop = 0x2e; break;
+    case TOK_SHR: rop = 0x2f; break;
+    case TOK_SAR: rop = 0x30; break;
+    case TOK_ADDC1:
+        emit_i(0x0a, 13, a, 0); /* preserve lhs for the carry test */
+        emit_r(0x20, IREG(d), a, b);
+        emit_r(0x25, 12, IREG(d), 13); /* carry = result < lhs */
+        return;
+    case TOK_SUBC1:
+        emit_r(0x25, 12, a, b); /* borrow = lhs < rhs */
+        emit_r(0x22, IREG(d), a, b);
+        return;
+    case TOK_ADDC2:
+        emit_r(0x20, IREG(d), a, b);
+        emit_r(0x20, IREG(d), IREG(d), 12);
+        return;
+    case TOK_SUBC2:
+        emit_r(0x22, IREG(d), a, b);
+        emit_r(0x22, IREG(d), IREG(d), 12);
+        return;
+    default:
+        tcc_error("la32r: unsupported operator");
+    }
     emit_r(rop, IREG(d), a, b);
 }
 ST_FUNC void gen_opf(int op) { tcc_error("la32r: floating point is not implemented"); }

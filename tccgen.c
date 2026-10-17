@@ -2116,6 +2116,9 @@ static void gen_opl(int op)
     case TOK_UDIV:
         func = TOK___udivdi3;
         goto gen_func;
+    case '*':
+        func = TOK___muldi3;
+        goto gen_func;
     case '%':
         func = TOK___moddi3;
         goto gen_mod_func;
@@ -2138,7 +2141,6 @@ static void gen_opl(int op)
     case '^':
     case '&':
     case '|':
-    case '*':
     case '+':
     case '-':
         //pv("gen_opl A",0,2);
@@ -7974,7 +7976,7 @@ static void init_putv(init_params *p, CType *type, unsigned long c)
 				   c + rel->r_offset - esym->st_value,
 				   ELFW(R_TYPE)(rel->r_info),
 				   ELFW(R_SYM)(rel->r_info),
-#if PTR_SIZE == 8
+#if SHT_RELX == SHT_RELA
 				   rel->r_addend
 #else
 				   0
@@ -8038,9 +8040,16 @@ static void init_putv(init_params *p, CType *type, unsigned long c)
                 break;
             case VT_PTR:
             case VT_INT:
+#if SHT_RELX == SHT_RELA
+	        if (vtop->r & VT_SYM)
+	          greloca(sec, vtop->sym, c, R_DATA_PTR, val);
+	        else
+	          write32le(ptr, val);
+#else
 	        if (vtop->r & VT_SYM)
 	          greloc(sec, vtop->sym, c, R_DATA_PTR);
 	        write32le(ptr, val);
+#endif
 	        break;
 #endif
 	    default:

@@ -412,9 +412,16 @@ extern long double strtold (const char *__nptr, char **__endptr);
 # define ELFCLASSW ELFCLASS32
 # define ElfW(type) Elf##32##_##type
 # define ELFW(type) ELF##32##_##type
+# ifdef TCC_TARGET_LA32R
+/* LoongArch uses explicit addends also for ELF32 objects. */
+# define ElfW_Rel ElfW(Rela)
+# define SHT_RELX SHT_RELA
+# define REL_SECTION_FMT ".rela%s"
+# else
 # define ElfW_Rel ElfW(Rel)
 # define SHT_RELX SHT_REL
 # define REL_SECTION_FMT ".rel%s"
+# endif
 #endif
 /* target address type */
 #define addr_t ElfW(Addr)

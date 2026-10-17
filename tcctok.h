@@ -228,6 +228,7 @@
      DEF(TOK___moddi3, "__moddi3")
      DEF(TOK___udivdi3, "__udivdi3")
      DEF(TOK___umoddi3, "__umoddi3")
+     DEF(TOK___muldi3, "__muldi3")
      DEF(TOK___ashrdi3, "__ashrdi3")
      DEF(TOK___lshrdi3, "__lshrdi3")
      DEF(TOK___ashldi3, "__ashldi3")
